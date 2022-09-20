@@ -12,6 +12,7 @@ squad_version = "v2.0"
 squad_dir = database_dir+"/squad"
 max_seq_length = 384
 train_batch_size = 10
+train_epochs=5
 
 raw_dataset = tf.data.TFRecordDataset([os.path.join(
     squad_dir, f"train_{squad_version}.tf_record")])
@@ -55,52 +56,9 @@ config_dict = json.loads(tf.io.gfile.GFile(bert_config_file).read())
 
 dataset = raw_dataset.shuffle(buffer_size=train_batch_size).map(decode_fn)
 
+train_ds = dataset.take(2000).batch(batch_size=train_batch_size)
 
-dataset = dataset.batch(
-    batch_size=train_batch_size)
-
-# print(dataset.take(2))
-
-# exit(0)
-train_ds = dataset.take(2000)
-
-test_ds = dataset.skip(2000).take(1000)
-
-# print(list(train_ds.take(1).as_numpy_iterator()))
-
-# print(config_dict)
-
-# tokenizer = nlp.layers.FastWordpieceBertTokenizer(
-#     vocab_file=os.path.join(bert_dir, "vocab.txt"),
-#     lower_case=True)
-
-
-# packer = nlp.layers.BertPackInputs(
-#     seq_length=max_seq_length,
-#     special_tokens_dict=tokenizer.get_special_tokens_dict()
-# )
-
-
-# class BertInputProcessor(layers.Layer):
-#     def __init__(self, tokenizer, packer):
-#         super().__init__()
-#         self.tokenizer = tokenizer
-#         self.packer = packer
-
-#     def call(self, inputs):
-#         tok1 = self.tokenizer(inputs['sentence1'])
-#         tok2 = self.tokenizer(inputs['sentence2'])
-
-#         packed = self.packer([tok1, tok2])
-
-#         if 'label' in inputs:
-#             return packed, inputs['label']
-#         else:
-#             return packed
-
-
-# bert_input_processor = BertInputProcessor(tokenizer, packer)
-
+test_ds = dataset.skip(2000).take(500).batch(batch_size=train_batch_size)
 
 encoder_config = nlp.encoders.EncoderConfig({
     'type': 'bert',
@@ -120,11 +78,6 @@ checkpoint.read(
     os.path.join(bert_dir, 'bert_model.ckpt')
 ).assert_consumed()
 
-# metrics = [metrics.SparseCategoricalAccuracy('accuracy')]
-
-# loss = losses.SparseCategoricalCrossentropy(from_logits=True)
-
-# optimizer = optimizers.Adam()
 
 bert_span.compile(optimizer='adam',
                   loss={
@@ -138,4 +91,4 @@ bert_span.compile(optimizer='adam',
 bert_span.fit(train_ds,
               validation_data=(test_ds),
               batch_size=train_batch_size,
-              epochs=5)
+              epochs=train_epochs)
