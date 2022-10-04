@@ -58,83 +58,6 @@ def print_output(name, output):
     print(output)
 
 
-def raw_read():
-    for entry in input_data:
-        for paragraph in entry["paragraphs"]:
-            paragraph_text = paragraph["context"]
-            doc_tokens = []
-            char_to_word_offset = []
-            prev_is_whitespace = True
-            for c in paragraph_text:
-                if is_whitespace(c):
-                    prev_is_whitespace = True
-                else:
-                    if prev_is_whitespace:
-                        doc_tokens.append(c)
-                    else:
-                        doc_tokens[-1] += c
-                    prev_is_whitespace = False
-                char_to_word_offset.append(len(doc_tokens) - 1)
-
-            for qa in paragraph["qas"]:
-                qas_id = qa["id"]
-                question_text = qa["question"]
-                start_position = None
-                end_position = None
-                orig_answer_text = None
-                is_impossible = qa["is_impossible"]
-                answer = qa["answers"][0]
-                orig_answer_text = answer["text"]
-                answer_offset = answer["answer_start"]
-                answer_length = len(orig_answer_text)
-                start_position = char_to_word_offset[answer_offset]
-                end_position = char_to_word_offset[answer_offset +
-                                                answer_length - 1]
-
-                actual_text = " ".join(
-                    doc_tokens[start_position:(end_position + 1)])
-                cleaned_answer_text = " ".join(
-                    whitespace_tokenize(orig_answer_text))
-                if actual_text.find(cleaned_answer_text) == -1:
-                    continue
-                # print("-----------qas_id--------------")
-                # print(qas_id)
-                # print("-----------paragraph_text--------------")
-                # print(paragraph_text)
-                # print("-----------question_text--------------")
-                # print(question_text)
-                # print("-----------doc_tokens--------------")
-                # print(doc_tokens)
-                # print("-----------orig_answer_text--------------")
-                # print(orig_answer_text)
-                # print("-----------start_position--------------")
-                # print(start_position)
-                # print("-----------end_position--------------")
-                # print(end_position)
-                # print("-----------is_impossible--------------")
-                # print(is_impossible)
-                # print("-----------char_to_word_offset--------------")
-                # print(char_to_word_offset)
-                query_tokens = tokenizer(tf.constant([question_text])).numpy()[0]
-
-                if len(query_tokens) > max_seq_length:
-                    query_tokens = query_tokens[0:max_seq_length]
-
-                tok_to_orig_index = []
-                orig_to_tok_index = []
-                all_doc_tokens = []
-                for (i, token) in enumerate(doc_tokens):
-                    orig_to_tok_index.append(len(all_doc_tokens))
-                    sub_tokens = tokenizer(tf.constant([token])).numpy()[0]
-                    for sub_token in sub_tokens:
-                        tok_to_orig_index.append(i)
-                        all_doc_tokens.append(sub_token)
-                print_output('tok_to_orig_index', tok_to_orig_index)
-                print_output('orig_to_tok_index', orig_to_tok_index)
-                print_output('all_doc_tokens', all_doc_tokens)
-                exit(0)
-
-
 raw_dataset = tf.data.TFRecordDataset([os.path.join(
     squad_dir, f"train_{squad_version}.tf_record")])
 
@@ -162,7 +85,8 @@ def decode_fn(record_bytes):
     return {
         'input_word_ids': example["input_ids"],
         'input_type_ids': example["segment_ids"],
-        'input_mask': example["input_mask"]
+        'input_mask': example["input_mask"],
+        'is_impossible': example["is_impossible"]
     }, {
         "start_positions": example["start_positions"],
         "end_positions": example["end_positions"],
@@ -175,8 +99,9 @@ def decode_fn(record_bytes):
 bert_config_file = os.path.join(bert_dir, 'bert_config.json')
 config_dict = json.loads(tf.io.gfile.GFile(bert_config_file).read())
 
-dataset = raw_dataset.take(5000).map(decode_fn)
+dataset = raw_dataset.map(decode_fn)
 
+dataset = dataset.filter(lambda x, y: x['is_impossible'] == 0)
 
 train_ds = dataset.take(2000).batch(batch_size=train_batch_size)
 
