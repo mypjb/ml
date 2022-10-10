@@ -101,6 +101,7 @@ config_dict = json.loads(tf.io.gfile.GFile(bert_config_file).read())
 
 dataset = raw_dataset.map(decode_fn)
 
+print(len(list(dataset.as_numpy_iterator())))
 dataset = dataset.filter(lambda x, y: x['is_impossible'] == 0)
 
 train_ds = dataset.take(2000).batch(batch_size=train_batch_size)
