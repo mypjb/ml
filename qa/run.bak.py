@@ -2,61 +2,23 @@ from cgi import test
 import os
 import numpy as np
 import tensorflow as tf
-from tensorflow_models import nlp
-from keras import metrics, layers, optimizers, losses, Model
+from tensorflow_models import nlp, optimization
+from keras import metrics, layers, optimizers, losses, Model, models, callbacks
 from keras.utils import plot_model
 import json
 
+checkpoint_dir = "./model_save"
 database_dir = "/home/pjb/Documents/github/datas"
 bert_dir = database_dir+"/bert_base"
 squad_version = "v2.0"
 squad_dir = database_dir+"/squad"
 max_seq_length = 384
-train_batch_size = 10
+train_batch_size = 5
 train_epochs = 5
 
-train_file = F'{squad_dir}/train-{squad_version}.json'
-dev_file = F'{squad_dir}/dev-{squad_version}.json'
 
 tokenizer = nlp.layers.FastWordpieceBertTokenizer(
     vocab_file=F'{bert_dir}/vocab.txt', lower_case=True)
-
-with tf.io.gfile.GFile(train_file, "r") as reader:
-    input_data = json.load(reader)["data"]
-
-
-def improve_answer_span(doc_tokens, input_start, input_end, tokenizer, orig_answer_text):
-
-    tok_answer_text = " ".join(tokenizer.tokenize(orig_answer_text))
-
-    for new_start in range(input_start, input_end + 1):
-        for new_end in range(input_end, new_start - 1, -1):
-            text_span = " ".join(doc_tokens[new_start:(new_end + 1)])
-            if text_span == tok_answer_text:
-                return (new_start, new_end)
-
-    return (input_start, input_end)
-
-
-def whitespace_tokenize(text):
-    """Runs basic whitespace cleaning and splitting on a piece of text."""
-    text = text.strip()
-    if not text:
-        return []
-    tokens = text.split()
-    return tokens
-
-
-def is_whitespace(c):
-    if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
-        return True
-    return False
-
-
-def print_output(name, output):
-    print(F'--------------{name}-----------------')
-    print(output)
-
 
 raw_dataset = tf.data.TFRecordDataset([os.path.join(
     squad_dir, f"train_{squad_version}.tf_record")])
@@ -93,51 +55,115 @@ def decode_fn(record_bytes):
     }
 
 
-# for raw_record in raw_dataset.take(10).map(decode_fn):
-#     print(raw_record)
-
 bert_config_file = os.path.join(bert_dir, 'bert_config.json')
+
 config_dict = json.loads(tf.io.gfile.GFile(bert_config_file).read())
 
-dataset = raw_dataset.map(decode_fn)
+dataset = raw_dataset.shuffle(buffer_size=train_batch_size).map(decode_fn)
 
-print(len(list(dataset.as_numpy_iterator())))
-dataset = dataset.filter(lambda x, y: x['is_impossible'] == 0)
-
-train_ds = dataset.take(2000).batch(batch_size=train_batch_size)
-
-test_ds = dataset.skip(2000).take(500).batch(batch_size=train_batch_size)
-
-td = list(raw_dataset.take(1).map(decode_fn).as_numpy_iterator())
-print(td)
-
-encoder_config = nlp.encoders.EncoderConfig({
-    'type': 'bert',
-    'bert': config_dict
-})
-
-bert_encoder = nlp.encoders.build_encoder(encoder_config)
-
-bert_span = nlp.models.BertSpanLabeler(network=bert_encoder)
-
-plot_model(bert_span, show_shapes=True, to_file="bert.png")
-
-checkpoint = tf.train.Checkpoint(encoder=bert_encoder)
-
-checkpoint.read(
-    os.path.join(bert_dir, 'bert_model.ckpt')
-).assert_consumed()
+# 总条目131944,可用条目87212
+train_num = 30
 
 
-bert_span.compile(optimizer='adam',
-                  loss={
-                      'start_positions': 'sparse_categorical_crossentropy',
-                      'end_positions': 'sparse_categorical_crossentropy'
-                  },
-                  metrics=['accuracy'])
+train_ds = dataset.take(train_num).batch(batch_size=train_batch_size)
 
-# bert_span.evaluate(test_ds)
+test_ds = dataset.skip(train_num).take(train_batch_size).batch(batch_size=train_batch_size)
 
-bert_span.fit(train_ds,
-              validation_data=(test_ds),
-              epochs=train_epochs)
+
+def get_optimizer():
+    train_data_size = train_num
+    steps_per_epoch = int(train_data_size / train_batch_size)
+    num_train_steps = steps_per_epoch * train_epochs
+    warmup_steps = int(0.1 * num_train_steps)
+    initial_learning_rate = 2e-5
+
+    linear_decay = tf.keras.optimizers.schedules.PolynomialDecay(
+        initial_learning_rate=initial_learning_rate,
+        end_learning_rate=0,
+        decay_steps=num_train_steps)
+
+    warmup_schedule = optimization.lr_schedule.LinearWarmup(
+        warmup_learning_rate=0,
+        after_warmup_lr_sched=linear_decay,
+        warmup_steps=warmup_steps
+    )
+
+    optimizer = optimizers.Adam(
+        learning_rate=warmup_schedule)
+
+    return optimizer
+
+
+def build_model():
+    encoder_config = nlp.encoders.EncoderConfig({
+        'type': 'bert',
+        'bert': config_dict
+    })
+
+    bert_encoder = nlp.encoders.build_encoder(encoder_config)
+    #bert_encoder.trainable = False
+    # output='predictions'
+    bert_span = nlp.models.BertSpanLabeler(network=bert_encoder)
+
+    checkpoint = tf.train.Checkpoint(encoder=bert_encoder)
+
+    checkpoint.read(
+        os.path.join(bert_dir, 'bert_model.ckpt')
+    ).assert_consumed()
+
+    return bert_span
+
+
+def make_or_restore_model():
+
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+
+    checkpoints = [checkpoint_dir + "/" +
+                   name for name in os.listdir(checkpoint_dir)]
+    if checkpoints:
+
+        latest_checkpoint = max(checkpoints, key=os.path.getctime)
+
+        print("Restoring from", latest_checkpoint)
+
+        model = models.load_model(latest_checkpoint, compile=False)
+    else:
+        print("Creating a new model")
+        model = build_model()
+
+    metrics = [tf.keras.metrics.SparseCategoricalAccuracy(
+        'accuracy', dtype=tf.float32)]
+
+    loss = [losses.SparseCategoricalCrossentropy(from_logits=True),
+            losses.SparseCategoricalCrossentropy(from_logits=True)]
+
+    optimizer = get_optimizer()
+
+    model.compile(optimizer=optimizer,
+                  loss=loss,
+                  metrics=metrics)
+
+    return model
+
+
+model = make_or_restore_model()
+
+callbacks = [
+    callbacks.ModelCheckpoint(
+        filepath=checkpoint_dir + "/ckpt-{epoch:02d}-{val_loss:.2f}",
+        save_best_only=True,
+        save_freq="epoch",
+        verbose=1
+    )
+]
+
+# model.evaluate(test_ds)
+
+model.fit(train_ds,
+          validation_data=(test_ds),
+          batch_size=train_batch_size,
+          epochs=train_epochs,
+          callbacks=callbacks)
+
+models.saved_model(model, "./qa_model")
