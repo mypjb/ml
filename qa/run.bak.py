@@ -67,7 +67,8 @@ train_num = 30
 
 train_ds = dataset.take(train_num).batch(batch_size=train_batch_size)
 
-test_ds = dataset.skip(train_num).take(train_batch_size).batch(batch_size=train_batch_size)
+test_ds = dataset.skip(train_num).take(
+    train_batch_size).batch(batch_size=train_batch_size)
 
 
 def get_optimizer():
@@ -150,10 +151,12 @@ def make_or_restore_model():
 model = make_or_restore_model()
 
 callbacks = [
+    # This callback saves a SavedModel every 100 batches.
+    # We include the training loss in the saved model name.
     callbacks.ModelCheckpoint(
         filepath=checkpoint_dir + "/ckpt-{epoch:02d}-{val_loss:.2f}",
         save_best_only=True,
-        save_freq="epoch",
+        save_freq='epoch',
         verbose=1
     )
 ]
